@@ -209,6 +209,8 @@ our %sar_space_devices_stat = ();
 our %sar_util_devices_stat = ();
 our %sar_networks_stat = ();
 our %sar_neterror_stat = ();
+our %sar_tcputil_stat = ();
+our %sar_tcperror_stat = ();
 our %sar_commit_memory_stat = ();
 
 our @sar_to_be_stored = (
@@ -228,6 +230,8 @@ our @sar_to_be_stored = (
 	'sar_util_devices_stat',
 	'sar_networks_stat',
 	'sar_neterror_stat',
+	'sar_tcputil_stat',
+	'sar_tcperror_stat',
 	'sar_commit_memory_stat'
 );
 
@@ -1119,12 +1123,13 @@ my %SAR_GRAPH_INFOS = (
 		'legends' => ['await'],
 	},
 	'24' => {
-		'name' => 'tcp-info',
-		'title' => 'TCP informations',
-		'description' => 'TCP informations (all interfaces)',
-		'ylabel' => 'Events/s',
-		'legends' => [ 'atmptf', 'estres', 'Retransmissions (retrans)', 'Bad checksums (isegerr)' ],
+		'name' => 'network-error-tcp',
+		'title' => 'TCP errors',
+		'description' => 'TCP errors (all interfaces)',
+		'ylabel' => 'Errors/s',
+		'legends' => [ 'atmptf', 'estres', 'Retransmissions (retrans)', 'Bad checksums (isegerr), Resets (orsts)' ],
 	},
+	# TODO : network-util-tcp
 );
 
 my %PIDSTAT_GRAPH_INFOS = (
@@ -1582,7 +1587,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			else
 			{
 				# Try to limit report generation to stats that exists in memory.
-				# The storage variable name are the same than the keys in DB_GRAPH_INFOS
+				# The storage variable names are the same than the keys in DB_GRAPH_INFOS
 				# minus some transformation.
 				foreach my $k (sort {$a cmp $b} keys %DB_GRAPH_INFOS)
 				{
@@ -1670,7 +1675,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			%fulldata = ();
 			if ( defined $pidstat_file && -e $pidstat_file  && (($#binfiles == -1) || ($pidstat_file !~ /\.gz$/)) )
 			{
-				print "DEBUG: looking for pidstatt data file $pidstat_file\n" if ($DEBUG);
+				print "DEBUG: looking for pidstat data file $pidstat_file\n" if ($DEBUG);
 				foreach my $id (sort keys %PIDSTAT_GRAPH_INFOS) {
 					&compute_pidstatfile_stats($pidstat_file, $in_dir, %{$PIDSTAT_GRAPH_INFOS{$id}});
 				}
@@ -1722,6 +1727,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			my @files = grep { /\.html$/ } readdir(ODIR);
 			closedir(ODIR);
 			foreach my $f (@files) {
+                print "DEBUG: inserting menu into $OUTPUT_DIR/$f \n" if ($DEBUG);
 				my $tmp_content = '';
 				my $fh = IO::File->new("$OUTPUT_DIR/$f", "r");
 				die "FATAL: can't read file $OUTPUT_DIR/$f, $!" if (not defined $fh);
@@ -10047,9 +10053,7 @@ sub compute_network_error_stat
 sub compute_network_error_report
 {
 	my $data_info = shift();
-	print ("compute_network_error_report $data_info \n") ;
 	my $src_base = shift();
-	print ("compute_network_error_report $src_base \n") ;
 
 	my %errors_stat = ();
 	foreach my $t (sort {$a <=> $b} keys %sar_neterror_stat) {
@@ -10059,11 +10063,11 @@ sub compute_network_error_report
 			$errors_stat{$dev}{'coll/s'}  .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'coll/s'} . '],';
 		}
 	}
-	#if (scalar keys %errors_stat > 0) {
+	if (scalar keys %errors_stat > 0) {
 		foreach my $n (sort { $a cmp $b } keys %errors_stat) {
 			push(@IFACE_LIST, $n) if (!grep(/^$n$/, @IFACE_LIST));
 
-			# Open a filehandle for each database
+			# Open a filehandle for each interface
 			my $fh = IO::File->new("$OUTPUT_DIR/$data_info->{name}-$n.html", 'w');
 			if (not defined $fh) {
 				die "FATAL: can't write to $OUTPUT_DIR/$data_info->{name}-$n.html, $!\n";
@@ -10077,10 +10081,59 @@ sub compute_network_error_report
 			$fh->print("</ul>\n");
                         &html_footer($fh, $n);
                         $fh->close;
-
 		}
-	#}
-    print ("compute_network_error_report FIN \n") ;
+	}
+}
+
+# Network / TCP / Errrors
+sub compute_network_error_tcp_stat
+{
+    print "DEBUG: computing TCP errors \n" if ($DEBUG);
+	for (my $i = 0; $i <= $#_; $i++) {
+        # 12:27:43     atmptf/s  estres/s retrans/s isegerr/s   orsts/s
+        # 12:27:44         0,00      0,00      0,00      0,00      0,00
+		my @data = split(/;/, $_[$i]);
+		print ("DEBUG: TCP error:  $data[2] - $data[3] - $data[4] \n") if ($DEBUG) ;
+		next if ($data[2] !~ /^\d+/);
+
+		# Skip unwanted lines
+		next if ($BEGIN && ($data[2] < $BEGIN_STAT));
+		next if ($END   && ($data[2] > $END_STAT));
+
+		map { s/,/\./ } @data ;
+		$sar_tcperror_stat{$data[2]}{'atmptf/s'}  = $data[3] || 0;
+		$sar_tcperror_stat{$data[2]}{'estres/s'}  = $data[4] || 0;
+		$sar_tcperror_stat{$data[2]}{'retrans/s'} = $data[5] || 0;
+		$sar_tcperror_stat{$data[2]}{'isegerr/s'} = $data[5] || 0;
+		$sar_tcperror_stat{$data[2]}{'orsts/s'}   = $data[6] || 0;
+	}
+}
+
+# Network / TCP / Errrors
+sub compute_network_error_tcp_report
+{
+	my $data_info = shift();
+	my $src_base = shift();
+	my %errors_stat = ();
+    print "DEBUG: building TCP errors report \n" if ($DEBUG);
+	foreach my $t (sort {$a <=> $b} keys %sar_tcperror_stat) {
+		print ("t = $t \n" )  if ($DEBUG);
+		$errors_stat{'atmptf/s'}  .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'atmptf/s'}  . '],';
+		$errors_stat{'estres/s'}  .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'estres/s'}  . '],';
+		$errors_stat{'retrans/s'} .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'retrans/s'} . '],';
+        print "DEBUG: retrans : $t $sar_tcperror_stat{$t}{'retrans/s'}  \n" if ($DEBUG);
+		$errors_stat{'isegerr/s'} .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'isegerr/s'} . '],';
+		$errors_stat{'orsts/s'}   .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'orsts/s'}   . '],';
+	}
+	if (scalar keys %errors_stat > 0) {
+ 			print "DEBUG: Writing data into $OUTPUT_DIR/$data_info->{name}.html \n" if ($DEBUG);
+			$errors_stat{'atmptf/s'} =~ s/,$//;
+			$errors_stat{'estres/s'} =~ s/,$//;
+			$errors_stat{'retrans/s'} =~ s/,$//;
+			$errors_stat{'isegerr/s'} =~ s/,$//;
+			$errors_stat{'orsts/s'} =~ s/,$//;
+			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, 'TCP errors', $errors_stat{'atmptf/s'}, $errors_stat{'estres/s'}, $errors_stat{'retrans/s'}, $errors_stat{'isegerr/s'}, $errors_stat{'orsts/s'} );
+	}
 }
 
 sub compute_sarstat_stats
@@ -10455,6 +10508,25 @@ sub compute_sarstat_stats
 		# Compute network errors statistics
 		&compute_network_error_stat(@content);
 	}
+	
+    ####
+	# Get TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp') {
+		my $command = "$SADF_PROG -t -P ALL -d $file -- -n ETCP";
+		print "DEBUG: TCP errors : running $command'\n" if ($DEBUG);
+		# Load data from file
+		my $fh = IO::File->new("$command", '-|');
+		if (defined $fh) {
+			die "FATAL: can't read output from command ($command): $!\n";
+		}
+		my @content = <$fh>;
+		close($fh);
+		chomp(@content);
+
+		# Compute network errors statistics
+		&compute_network_error_tcp_stat(@content);
+	}
 }
 
 sub find_report_type
@@ -10516,6 +10588,8 @@ sub find_report_type
 	# New in 8.1.7
 	} elsif ($data =~ m#active\/s\s+#) {
 		$type = 'tcp';
+	} elsif ($data =~ m#atmptf\/s\s+#) {
+		$type = 'tcperr';
 	# Since 11.1.4
 	} elsif ($data =~ m#\%ufsused#) {
 		$type = 'space';
@@ -10907,6 +10981,8 @@ sub compute_sarfile_stats
 {
 	my ($file, $in_dir, %data_info) = @_;
 
+    print "DEBUG: Computing sarfile stats: $data_info{name} \n" if ($DEBUG);
+
 	$SAR_UPPER_11_5_6 = 0;
 
 	# Load sar statistics from file if not already done
@@ -11107,11 +11183,22 @@ sub compute_sarfile_stats
 		&compute_network_error_stat(@{$fulldata{err}});
 	}
 
+	####
+	# Set network TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp')
+	{
+		# Compute network error statistics
+		&compute_network_error_tcp_stat(@{$fulldata{tcperr}});
+	}
+
 }
 
 sub compute_sar_graph
 {
 	my ($src_base, %data_info) = @_;
+
+    print "DEBUG: Computing sar data: $data_info{name} \n" if ($DEBUG);
 
 	if (!grep(/^$data_info{name}$/,
 			'system-await', 'system-device',
@@ -11120,6 +11207,7 @@ sub compute_sar_graph
 			'network-utilization', 'network-error'))
 	{
 		# Open global filehandle
+		print ("DEBUG: opening $data_info{name} \n") if ($DEBUG) ;
 		$FH = IO::File->new("$OUTPUT_DIR/$data_info{name}.html", 'w');
 		if (not defined $FH) {
 			die "FATAL: can't write to $OUTPUT_DIR/$data_info{name}.html, $!\n";
@@ -11332,6 +11420,15 @@ sub compute_sar_graph
 	{
 		# Compute graphs for network errors statistics
 		&compute_network_error_report(\%data_info, $src_base);
+	}
+
+	####
+	# Show TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp')
+	{
+		# Compute graphs for network errors statistics
+		&compute_network_error_tcp_report(\%data_info, $src_base);
 	}
 
 	if (!grep(/^$data_info{name}$/, 'system-await', 'system-srvtime', 'system-device', 'system-tpsdevice', 'system-cpudevice', 'network-utilization', 'network-error'))
