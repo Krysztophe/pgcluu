@@ -1118,6 +1118,13 @@ my %SAR_GRAPH_INFOS = (
 		'y2label' => 'Milliseconds',
 		'legends' => ['await'],
 	},
+	'24' => {
+		'name' => 'tcp-info',
+		'title' => 'TCP informations',
+		'description' => 'TCP informations (all interfaces)',
+		'ylabel' => 'Events/s',
+		'legends' => [ 'atmptf', 'estres', 'Retransmissions (retrans)', 'Bad checksums (isegerr)' ],
+	},
 );
 
 my %PIDSTAT_GRAPH_INFOS = (
@@ -8816,6 +8823,15 @@ sub generate_html_menu
 			  </li>
 };
 		}
+		$menu_str .= qq{
+		  <li id="menu-tcp" class="dropdown-submenu">
+		     <a href="#" tabindex="-1">TCP </a>
+		      <ul class="dropdown-menu">
+		      <li id="menu-network-utilization"><a href="network-utilization-tcp.html">TCP utilization</a></li>
+		      <li id="menu-network-error"><a href="network-error-tcp.html">TCP errors</a></li>
+		      </ul>
+		  </li>
+};
 		$menu_str .= qq{
 		    </ul>
 		  </li>
