@@ -10047,17 +10047,19 @@ sub compute_network_error_stat
 sub compute_network_error_report
 {
 	my $data_info = shift();
+	print ("compute_network_error_report $data_info \n") ;
 	my $src_base = shift();
+	print ("compute_network_error_report $src_base \n") ;
 
 	my %errors_stat = ();
-	foreach my $t (sort {$a <=> $b} keys %sar_networks_stat) {
-		foreach my $dev (keys %{$sar_networks_stat{$t}}) {
+	foreach my $t (sort {$a <=> $b} keys %sar_neterror_stat) {
+		foreach my $dev (keys %{$sar_neterror_stat{$t}}) {
 			$errors_stat{$dev}{'rxerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'rxerr/s'} . '],';
 			$errors_stat{$dev}{'txerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'txerr/s'} . '],';
 			$errors_stat{$dev}{'coll/s'}  .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'coll/s'} . '],';
 		}
 	}
-	if (scalar keys %errors_stat > 0) {
+	#if (scalar keys %errors_stat > 0) {
 		foreach my $n (sort { $a cmp $b } keys %errors_stat) {
 			push(@IFACE_LIST, $n) if (!grep(/^$n$/, @IFACE_LIST));
 
@@ -10077,7 +10079,8 @@ sub compute_network_error_report
                         $fh->close;
 
 		}
-	}
+	#}
+    print ("compute_network_error_report FIN \n") ;
 }
 
 sub compute_sarstat_stats
