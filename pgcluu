@@ -10133,7 +10133,7 @@ sub compute_network_util_tcp_report
 			$util_stat{'passive/s'} =~ s/,$//;
 			$util_stat{'iseg/s'} =~ s/,$//;
 			$util_stat{'oseg/s'} =~ s/,$//;
-			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, 'TCP utilization', $util_stat{'active/s'}, $util_stat{'passive/s'}, $util_stat{'iseg/s'}, $util_stat{'oseg/s'});
+			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, '', $util_stat{'active/s'}, $util_stat{'passive/s'}, $util_stat{'iseg/s'}, $util_stat{'oseg/s'});
 	}
 }
 
@@ -10182,7 +10182,7 @@ sub compute_network_error_tcp_report
 			$errors_stat{'retrans/s'} =~ s/,$//;
 			$errors_stat{'isegerr/s'} =~ s/,$//;
 			$errors_stat{'orsts/s'} =~ s/,$//;
-			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, 'TCPv4 network errors', $errors_stat{'atmptf/s'}, $errors_stat{'estres/s'}, $errors_stat{'retrans/s'}, $errors_stat{'isegerr/s'}, $errors_stat{'orsts/s'} );
+			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, '', $errors_stat{'atmptf/s'}, $errors_stat{'estres/s'}, $errors_stat{'retrans/s'}, $errors_stat{'isegerr/s'}, $errors_stat{'orsts/s'} );
 	}
 }
 
