@@ -10034,8 +10034,8 @@ sub compute_network_error_report
 	my $src_base = shift();
 
 	my %errors_stat = ();
-	foreach my $t (sort {$a <=> $b} keys %sar_neterror_stat) {
-		foreach my $dev (keys %{$sar_neterror_stat{$t}}) {
+	foreach my $t (sort {$a <=> $b} keys %sar_networks_stat) {
+		foreach my $dev (keys %{$sar_networks_stat{$t}}) {
 			$errors_stat{$dev}{'rxerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'rxerr/s'} . '],';
 			$errors_stat{$dev}{'txerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'txerr/s'} . '],';
 			$errors_stat{$dev}{'coll/s'}  .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'coll/s'} . '],';
