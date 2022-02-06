@@ -1127,7 +1127,7 @@ my %SAR_GRAPH_INFOS = (
 		'title' => 'TCPv4 utilization',
 		'description' => 'TCPv4 network trafic (all interfaces)',
 		'ylabel' => 'Events/s',
-		'legends' => [ 'Initiated opens (active)', 'Passive opens (passive)', 'Received segments (iseg)', 'Sent segmentd (oseg)' ],
+		'legends' => [ 'Initiated opens (active)', 'Passive opens (passive)', 'Received segments (iseg)', 'Sent segments (oseg)' ],
 		#              tcpActiveOpens           tcpPassiveOpens              tcpInSegs                tcpOutSegs
 	},
 	'25' => {
