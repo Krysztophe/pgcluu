@@ -136,6 +136,8 @@ our %all_settings_diff = ();
 our %all_db_role_setting_diff = ();
 our %all_pgbouncer_ini_diff = ();
 our %all_prepared_xact = ();
+our %all_subxact_counters = ();
+our %all_wait_events = ();
 
 # Names of the variables that need to be saved as binary file
 our @pg_to_be_stored = (
@@ -191,6 +193,8 @@ our @pg_to_be_stored = (
 	'all_stat_statements',
 	'all_stat_unlogged',
 	'all_prepared_xact',
+	'all_subxact_counters',
+	'all_wait_events',
 );
 
 # Names of sar variables that need to be saved as binary file
@@ -950,6 +954,32 @@ my %DB_GRAPH_INFOS = (
 			'legends' => ['Extended stats'],
 			'active' => 1,
 			'menu' => 'Extended statistics',
+		},
+	},
+	'pg_subxact_counters.csv' => {
+		'1' => {
+			'name' =>  'cluster-subxact_counters',
+			'title' => 'Global subtransactions counters',
+			'description' => 'Subtransactions can lead to performance issue. Counters to monitor the subtransactions (generation rate, overflow, state).',
+			'ylabel' => 'Number of subxact',
+			'legends' => ['Start','Commit','Abort', 'Overflow'],
+			'y2label' => 'Number of overflow',
+		},
+	},
+	'pg_stat_waitevent.csv' => {
+		'1' => {
+			'name' =>  'cluster-waitevent_types',
+			'title' => 'Wait Events types',
+			'description' => 'Wait event by type. <b>Activity</b>: The server process is idle. This event type indicates a process waiting for activity in its main processing loop. <b>BufferPin</b>: The server process is waiting for exclusive access to a data buffer. Buffer pin waits can be protracted if another process holds an open cursor that last read data from the buffer in question. <b>Client</b>: The server process is waiting for activity on a socket connected to a user application. Thus, the server expects something to happen that is independent of its internal processes. <b>Extension</b>: The server process is waiting for some condition defined by an extension module. <b>IO</b>: The server process is waiting for an I/O operation to complete. <b>IPC</b>: The server process is waiting for some interaction with another server process. <b>Lock</b>: The server process is waiting for a heavyweight lock. Heavyweight locks, also known as lock manager locks or simply locks, primarily protect SQL-visible objects such as tables. However, they are also used to ensure mutual exclusion for certain internal operations such as relation extension. <b>LWLock</b>: The server process is waiting for a lightweight lock. Most such locks protect a particular data structure in shared memory. <b>Timeout</b>: The server process is waiting for a timeout to expire.',
+			'ylabel' => 'Number of events types',
+			'legends' => [],
+		},
+		'2' => {
+			'name' =>  'cluster-waitevent_events',
+			'title' => 'Wait Events',
+			'description' => 'Use of Wait events. See <a href="https://www.postgresql.org/docs/current/monitoring-stats.html#WAIT-EVENT-TABLE" target="new">Wait Event table</a> for more information.',
+			'ylabel' => 'Number of events types',
+			'legends' => [],
 		},
 	},
 );
@@ -4571,6 +4601,216 @@ sub pg_stat_bgwriter_report
 	}
 }
 
+# Compute statistics of pg_subxact_counters
+sub pg_subxact_counters
+{
+	my ($in_dir, $file, $offset) = @_;
+
+	my @start_vals = ();
+	my %total_count = ();
+	my $tmp_val = 0;
+	# Load data from file
+	my $curfh = open_filehdl("$in_dir/$file");
+	$curfh->seek($offset,0);
+	while (my $l = <$curfh>)
+	{
+		$offset += length($l);
+		my @data = split(/;/, $l);
+		next if (!&normalize_line(\@data));
+
+		push(@start_vals, @data) if ($#start_vals < 0);
+
+		# Store interval between previous run
+		$all_subxact_counters{$data[0]}{interval} = ($data[0] - $start_vals[0])/1000;
+
+		if (($data[2] - $start_vals[2]) < 0) { $tmp_val = 0 } else { $tmp_val = ($data[2] - $start_vals[2]) };
+		$all_subxact_counters{$data[0]}{subxact_start} = $tmp_val;
+		if (($data[3] - $start_vals[3]) < 0) { $tmp_val = 0 } else { $tmp_val = ($data[3] - $start_vals[3]) };
+		$all_subxact_counters{$data[0]}{subxact_commit} = $tmp_val;
+		if (($data[4] - $start_vals[4]) < 0) { $tmp_val = 0 } else { $tmp_val = ($data[4] - $start_vals[4]) };
+		$all_subxact_counters{$data[0]}{subxact_abort} = $tmp_val;
+		if (($data[5] - $start_vals[5]) < 0) { $tmp_val = 0 } else { $tmp_val = ($data[5] - $start_vals[5]) };
+		$all_subxact_counters{$data[0]}{subxact_overflow} = $tmp_val;
+
+		@start_vals = ();
+		push(@start_vals, @data);
+	}
+	$curfh->close();
+
+	return $offset || 0;
+}
+
+# Compute graphs of subxact counters
+sub pg_subxact_counters_report
+{
+	my ($src_base, %data_info) = @_;
+
+	my %subxact_stat = ();
+	foreach my $t (sort {$a <=> $b} keys %all_subxact_counters)
+	{
+		$subxact_stat{start} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_subxact_counters{$t}{subxact_start} || 0) . '],';
+		$subxact_stat{commit} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_subxact_counters{$t}{subxact_commit} || 0) . '],';
+		$subxact_stat{abort} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_subxact_counters{$t}{subxact_abort} || 0) . '],';
+		$subxact_stat{overflow} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_subxact_counters{$t}{subxact_overflow} || 0) . '],';
+	}
+	%all_subxact_counters = ();
+
+	# Build graph dataset
+	foreach my $id (sort {$a <=> $b} keys %data_info)
+	{
+		my $dbfh = &append_to_html_file("$OUTPUT_DIR/cluster-subxact_counters.html", $src_base);
+		if ($data_info{$id}{name} eq 'cluster-subxact_counters') {
+			$subxact_stat{start} =~ s/,$//;
+			$subxact_stat{commit} =~ s/,$//;
+			$subxact_stat{abort} =~ s/,$//;
+			$subxact_stat{overflow} =~ s/,$//;
+			$dbfh->print( &jqplot_linegraph_array($IDX++, 'cluster-subxact_counters', \%{$data_info{$id}}, '', $subxact_stat{start}, $subxact_stat{commit}, $subxact_stat{abort}, $subxact_stat{overflow}) );
+		}
+		$dbfh->close();
+	}
+}
+
+sub pg_stat_waitevent
+{
+	my ($in_dir, $file, $offset) = @_;
+
+	my %total_count = ();
+	# Load data from file
+	my $curfh = open_filehdl("$in_dir/$file");
+	$curfh->seek($offset,0);
+	my @etype = ();
+	my @wevent = ();
+	while (my $l = <$curfh>)
+	{
+		my @data = split(/;/, $l);
+		next if (!&normalize_line(\@data));
+
+		# events types
+		$all_wait_events{$data[0]}{type}{$data[2]} += $data[4];
+		push(@etype, $data[2]) if (!grep(/^$data[2]$/, @etype));
+		# wait events
+		$all_wait_events{$data[0]}{event}{$data[3]} += $data[4];
+		push(@wevent, $data[3]) if (!grep(/^$data[3]$/, @wevent));
+	}
+	$curfh->close();
+
+	foreach my $t (sort {$a <=> $b } keys %all_wait_events)
+	{
+		foreach my $e (@etype)
+		{
+			if (!exists $all_wait_events{$t}{type}{$e}) {
+				$all_wait_events{$t}{type}{$e} = 0;
+			}
+			foreach my $e (@wevent)
+			{
+				if (!exists $all_wait_events{$t}{event}{$e}) {
+					$all_wait_events{$t}{event}{$e} = 0;
+				}
+			}
+		}
+	}
+	my $prev_time = '';
+	my %prev_value = ();
+	my $wprev_time = '';
+	my %wprev_value = ();
+	foreach my $t (sort {$a <=> $b} keys %all_wait_events)
+	{
+		foreach my $e (@etype)
+		{
+			if (!$prev_time)
+			{
+				$prev_value{$e} = $all_wait_events{$t}{type}{$e};
+				$all_wait_events{$t}{type}{$e} = 0;
+			}
+			else
+			{
+				my $tmp_val = $all_wait_events{$t}{type}{$e} - $prev_value{$e};
+				$prev_value{$e} = $all_wait_events{$t}{type}{$e};
+				$all_wait_events{$t}{type}{$e} = $tmp_val;
+			}
+		}
+		foreach my $w (@wevent)
+		{
+			if (!$wprev_time)
+			{
+				$wprev_value{$w} = $all_wait_events{$t}{event}{$w};
+				$all_wait_events{$t}{event}{$w} = 0;
+			}
+			else
+			{
+				my $tmp_val = $all_wait_events{$t}{event}{$w} - $wprev_value{$w};
+				$wprev_value{$w} = $all_wait_events{$t}{event}{$w};
+				$all_wait_events{$t}{event}{$w} = $tmp_val;
+			}
+		}
+		if ($prev_time) {
+			$all_wait_events{$t}{interval} = ($t - $prev_time)/1000;
+		}
+		$prev_time = $t;
+		$wprev_time = $t;
+	}
+
+	return $offset || 0;
+}
+
+# Compute graphs of wait event statistics
+sub pg_stat_waitevent_report
+{
+	my ($src_base, %data_info) = @_;
+
+	my %waitevent_type_stat = ();
+	my %waitevent_event_stat = ();
+	foreach my $t (sort {$a <=> $b} keys %all_wait_events)
+	{
+		foreach my $e (sort keys %{$all_wait_events{$t}{type}})
+		{
+			$waitevent_type_stat{$e} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_wait_events{$t}{type}{$e} || 0) . '],';
+		}
+		foreach my $e (sort keys %{$all_wait_events{$t}{event}})
+		{
+			$waitevent_event_stat{$e} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_wait_events{$t}{event}{$e} || 0) . '],';
+		}
+	}
+
+	%all_wait_events = ();
+
+	# Build graph dataset
+	foreach my $id (sort {$a <=> $b} keys %data_info)
+	{
+		if ($data_info{$id}{name} eq 'cluster-waitevent_types')
+		{
+			my $dbfh = &append_to_html_file("$OUTPUT_DIR/cluster-waitevent_types.html", $src_base);
+			my @legends = ();
+			my @graphs = ();
+			foreach my $e (sort keys %waitevent_type_stat)
+			{
+				push(@legends, $e);
+				$waitevent_type_stat{$e} =~ s/,$//;
+				push(@graphs, $waitevent_type_stat{$e});
+			}
+			$data_info{$id}{legends} = \@legends;
+			$dbfh->print( &jqplot_linegraph_array($IDX++, 'cluster-waitevent_types', \%{$data_info{$id}}, '', @graphs) );
+			$dbfh->close();
+		}
+		if ($data_info{$id}{name} eq 'cluster-waitevent_events')
+		{
+			my $dbfh = &append_to_html_file("$OUTPUT_DIR/cluster-waitevent_events.html", $src_base);
+			my @legends = ();
+			my @graphs = ();
+			foreach my $e (sort keys %waitevent_event_stat)
+			{
+				push(@legends, $e);
+				$waitevent_event_stat{$e} =~ s/,$//;
+				push(@graphs, $waitevent_event_stat{$e});
+			}
+			$data_info{$id}{legends} = \@legends;
+			$dbfh->print( &jqplot_linegraph_array($IDX++, 'cluster-waitevent_events', \%{$data_info{$id}}, '', @graphs) );
+			$dbfh->close();
+		}
+	}
+}
+
+
 # Compute statistics of connections
 sub pg_stat_connections
 {
@@ -5443,15 +5683,21 @@ sub pg_stat_locks
 	# Load data from file
 	my $curfh = open_filehdl("$in_dir/$file");
 	$curfh->seek($offset,0);
-	while (my $l = <$curfh>) {
+	while (my $l = <$curfh>)
+	{
 		$offset += length($l);
 		my @data = split(/;/, $l);
 		next if (!&normalize_line(\@data));
 
 		# timestamp|database|label|(type|mode|granted)|count
-		$data[3] = 'granted' if ($data[3] eq 't');
-		$data[3] = 'waiting' if ($data[3] eq 'f');
+		$data[3] = 'granted' if ($data[2] eq 'lock_granted' && $data[3] eq 't');
+		$data[3] = 'waiting' if ($data[2] eq 'lock_granted' && $data[3] eq 'f');
 		$all_stat_locks{$data[0]}{$data[1]}{$data[2]}{$data[3]} += $data[4];
+		if ($data[3] eq 'granted') {
+			$all_stat_locks{$data[0]}{$data[1]}{$data[2]}{'waiting'} += 0;
+		} elsif ($data[3] eq 'waiting') {
+			$all_stat_locks{$data[0]}{$data[1]}{$data[2]}{'granted'} += 0;
+		}
 	}
 	$curfh->close();
 
@@ -5468,9 +5714,22 @@ sub pg_stat_locks_report
 	foreach my $t (keys %all_stat_locks) {
 		foreach my $db (keys %{$all_stat_locks{$t}}) {
 			foreach my $lbl (keys %{$all_stat_locks{$t}{$db}}) {
-				push(@{$legends{$db}{$lbl}}, 'waiting') if ( grep(/^waiting$/, @{$legends{$db}{$lbl}}) && (${$legends{$db}{$lbl}}[0] eq 'granted') );
-				foreach my $k (@{$legends{$db}{$lbl}}) {
+				foreach my $k (sort keys %{$all_stat_locks{$t}{$db}{$lbl}}) {
+					push(@{$legends{$db}{$lbl}}, $k) if (!grep(/^$k$/, @{$legends{$db}{$lbl}}));
+				}
+			}
+		}
+	}
+	foreach my $t (keys %all_stat_locks) {
+		foreach my $db (keys %{$all_stat_locks{$t}}) {
+			foreach my $lbl (keys %{$all_stat_locks{$t}{$db}}) {
+				foreach my $k (sort keys %{$all_stat_locks{$t}{$db}{$lbl}}) {
 					$locks_stat{$db}{$lbl}{$k} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',' . ($all_stat_locks{$t}{$db}{$lbl}{$k}||0) . '],';
+				}
+				# Complete inexisting values for other labels
+				foreach my $e (@{$legends{$db}{$lbl}}) {
+					next if (exists $all_stat_locks{$t}{$db}{$lbl}{$e});
+					$locks_stat{$db}{$lbl}{$e} .= '[' . ($t - ($STATS_TIMEZONE*3600*1000)) . ',0],';
 				}
 			}
 		}
@@ -6832,6 +7091,8 @@ sub pg_stat_statements
 		# timestamp | userid | datname | query | calls | total_time | rows | shared_blks_hit | shared_blks_read | shared_blks_written | local_blks_hit | local_blks_read | local_blks_written | temp_blks_read | temp_blks_written
 		# pg 9.2+
 		# timestamp | userid | datname | query | calls | total_time | rows | shared_blks_hit | shared_blks_read | shared_blks_dirtied | shared_blks_written | local_blks_hit | local_blks_read | local_blks_dirtied | local_blks_written | temp_blks_read | temp_blks_written | blk_read_time | blk_write_time |
+		# pg 17.0
+		# timestamp | userid | datname | query | calls | total_time | rows | shared_blks_hit | shared_blks_read | shared_blks_dirtied | shared_blks_written | local_blks_hit | local_blks_read | local_blks_dirtied | local_blks_written | temp_blks_read | temp_blks_written | shared_blk_read_time | shared_blk_write_time |
 
 		my $id = 3;
 		#$id++ if ($#data == 20);
@@ -6862,8 +7123,8 @@ sub pg_stat_statements
 				$all_stat_statements{$data[2]}{$data[$id]}{local_blks_written} = $data[$id+11];
 				$all_stat_statements{$data[2]}{$data[$id]}{temp_blks_read} = ($data[$id+12]*8192);
 				$all_stat_statements{$data[2]}{$data[$id]}{temp_blks_written} = ($data[$id+13]*8192);
-				$all_stat_statements{$data[2]}{$data[$id]}{blk_read_time} = $data[$id+14];
-				$all_stat_statements{$data[2]}{$data[$id]}{blk_write_time} = $data[$id+15];
+				$all_stat_statements{$data[2]}{$data[$id]}{shared_blk_read_time} = $data[$id+14];
+				$all_stat_statements{$data[2]}{$data[$id]}{shared_blk_write_time} = $data[$id+15];
 				# This is just a flag, the total_time key is not used but must exists to not generate
 				# error on use of unitialised value later. This is ugly but useful
 				$all_stat_statements{$data[2]}{has_temp}{total_time} = 2;
@@ -6934,7 +7195,7 @@ sub pg_stat_statements_report
 					$additional_cols .= "<td>" . &pretty_print_number($all_stat_statements{$db}{$q}{shared_blks_read}) . "</td><td>" . &pretty_print_number($all_stat_statements{$db}{$q}{shared_blks_hit}) . "</td><td>" . &pretty_print_number($all_stat_statements{$db}{$q}{shared_blks_dirtied}) . "</td><td>" . &pretty_print_number($all_stat_statements{$db}{$q}{shared_blks_written}) . "</td>";
 				}
 				if ($all_stat_statements{$db}{has_temp}{total_time} == 3) {
-					$additional_cols .= "<td>" . sprintf("%0.2d", ($all_stat_statements{$db}{$q}{blk_read_time}+$all_stat_statements{$db}{$q}{blk_write_time})/($all_stat_statements{$db}{$q}{calls}||1)) . "</td>";
+					$additional_cols .= "<td>" . sprintf("%0.2d", ($all_stat_statements{$db}{$q}{shared_blk_read_time}+$all_stat_statements{$db}{$q}{shared_blk_write_time})/($all_stat_statements{$db}{$q}{calls}||1)) . "</td>";
 				}
 				my $query = $q;
 				$query =~ s/#SMCLN#/;/g;
@@ -8021,6 +8282,10 @@ sub generate_html_menu
 		my $disable_pgbouncer = ' class="disabled"';
 		my $disable_transactions = ' class="disabled"';
 		my $disable_prepared = ' class="disabled"';
+		my $disable_subxact_counters = ' class="disabled"';
+		my $disable_waitevent_types = ' class="disabled"';
+		my $disable_waitevent_events = ' class="disabled"';
+		my $disable_waitevents = ' disabled';
 
 		# Enable all menu that have a dedicated report.
 		if (-e "$OUTPUT_DIR/cluster-database-size.html") {
@@ -8043,7 +8308,7 @@ sub generate_html_menu
 		if (&backend_minimum_version(9.2) && (-e "$OUTPUT_DIR/cluster-database-deadlocks.html")) {
 			$disable_deadlock = '';
 		}
-		if (-e "$OUTPUT_DIR/cluster-database-buffersused.html") {
+		if (-e "$OUTPUT_DIR/cluster-buffersused.html") {
 			$disable_buffercache = '';
 			$disable_buffer = '';
 		}
@@ -8157,6 +8422,17 @@ sub generate_html_menu
 			$disable_conf = '';
 			$disable_pgbouncer = '';
 		}
+		if (-e "$OUTPUT_DIR/cluster-subxact_counters.html") {
+			$disable_subxact_counters = '';
+		}
+		if (-e "$OUTPUT_DIR/cluster-waitevent_types.html") {
+			$disable_waitevent_types = '';
+			$disable_waitevents = '';
+		}
+		if (-e "$OUTPUT_DIR/cluster-waitevent_events.html") {
+			$disable_waitevent_events = '';
+			$disable_waitevents = '';
+		}
 
 		$menu_str .= qq{
               <li id="menu-cluster" class="dropdown">
@@ -8180,10 +8456,10 @@ sub generate_html_menu
 			<li id="menu-pgbuffercache" class="dropdown-submenu$disable_buffer">
 			   <a href="#" tabindex="-1">Shared buffers statistics </a>
 			      <ul class="dropdown-menu">
-			      <li id="menu-cluster-buffersused"$disable_buffercache><a href="cluster-database-buffersused.html">Shared buffers utilization</a></li>
-			      <li id="menu-cluster-databaseloaded"$disable_buffercache><a href="cluster-database-databaseloaded.html">Database in shared buffers</a></li>
-			      <li id="menu-cluster-usagecount"$disable_buffercache><a href="cluster-database-usagecount.html">Usagecount in shared buffers</a></li>
-			      <li id="menu-cluster-isdirty"$disable_buffercache><a href="cluster-database-isdirty.html">Usagecount in dirty buffers</a></li>
+			      <li id="menu-cluster-buffersused"$disable_buffercache><a href="cluster-buffersused.html">Shared buffers utilization</a></li>
+			      <li id="menu-cluster-databaseloaded"$disable_buffercache><a href="cluster-databaseloaded.html">Database in shared buffers</a></li>
+			      <li id="menu-cluster-usagecount"$disable_buffercache><a href="cluster-usagecount.html">Usagecount in shared buffers</a></li>
+			      <li id="menu-cluster-isdirty"$disable_buffercache><a href="cluster-isdirty.html">Usagecount in dirty buffers</a></li>
 			      </ul>
 			</li>
 		      <li class="divider"></li>
@@ -8223,6 +8499,14 @@ sub generate_html_menu
 		      <li id="menu-cluster-transactions"$disable_transactions><a href="cluster-database-transactions.html">Transaction throughput</a></li>
 		      <li id="menu-cluster-prepared"$disable_prepared><a href="cluster-database-prepared.html">Prepared transactions</a></li>
 		      <li id="menu-cluster-canceled_queries"$disable_canceled><a href="cluster-database-canceled_queries.html">Canceled queries</a></li>
+		      <li id="menu-cluster-subxact_counters"$disable_subxact_counters><a href="cluster-subxact_counters.html">Subxact counters</a></li>
+			<li id="menu-rw" class="dropdown-submenu$disable_waitevents">
+			   <a href="#" tabindex="-1">Wait Events </a>
+			      <ul class="dropdown-menu">
+			      <li id="menu-cluster-waitevent_types"$disable_waitevent_types><a href="cluster-waitevent_types.html">Wait Event types</a></li>
+			      <li id="menu-cluster-waitevent_events"$disable_waitevent_events><a href="cluster-waitevent_events.html">Wait Event events</a></li>
+			      </ul>
+		        </li>
 		      <li class="divider"></li>
 			<li id="menu-replication" class="dropdown-submenu$disable_allrepli">
 			   <a href="#" tabindex="-1">Replication statistics </a>
@@ -8525,6 +8809,7 @@ sub generate_html_menu
 		{
 			$disable_deadlock = "";
 			$disable_locks = "";
+			$disable_lock = "";
 		}
 		if (-e "$OUTPUT_DIR/database-tx-$db.html")
 		{
@@ -11890,10 +12175,10 @@ sub jqplot_linegraph
 <script type="text/javascript">
 /* <![CDATA[ */
 @$data
-var series_arr = [ $options_series ];
+var series_arr_$buttonid = [ $options_series ];
 
 create_download_button($buttonid, 'btn');
-var graph_${buttonid} = create_linegraph('$divid$buttonid', '$title', '$ylabel', series_arr, $dateTracker_dataopts, '$y2label');
+var graph_${buttonid} = create_linegraph('$divid$buttonid', '$title', '$ylabel', series_arr_$buttonid, $dateTracker_dataopts, '$y2label');
 add_download_button_event($buttonid, '$divid$buttonid', graph_${buttonid});
 /* ]]> */
 </script>
@@ -12075,7 +12360,6 @@ sub read_sysinfo_file
 			push(@{$sysinfo{$section}}, '<tr><td>' . join('</td><td>', split(/\s+/, $l)) . "</td></tr>");
 		}
 		elsif ($section eq 'MOUNT') {
-			next if ($l !~ /^\//);
 			push(@{$sysinfo{$section}}, '<tr><td>' . join('</td><td>', split(/\s+on\s+|\s+type\s+|\s+/, $l)) . '</td></tr>');
 		}
 		elsif ($section eq 'SYSTEM') {
