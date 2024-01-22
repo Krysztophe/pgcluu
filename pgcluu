@@ -7,7 +7,7 @@
 # For license terms, see the LICENSE file.
 #
 # Author: Gilles Darold
-# Copyright: (C) 2012-2021 Gilles Darold - All rights reserved.
+# Copyright: (C) 2012-2023 Gilles Darold - All rights reserved.
 #------------------------------------------------------------------------------
 use vars qw($VERSION $PROGRAM);
 
@@ -24,7 +24,7 @@ use POSIX qw(locale_h sys_wait_h ceil strftime);
 setlocale(LC_ALL, 'C');
 use Storable qw(store_fd fd_retrieve);
 
-$VERSION = '3.2';
+$VERSION = '3.5';
 $PROGRAM = 'pgCluu';
 
 # Global variables
@@ -209,6 +209,8 @@ our %sar_space_devices_stat = ();
 our %sar_util_devices_stat = ();
 our %sar_networks_stat = ();
 our %sar_neterror_stat = ();
+our %sar_tcputil_stat = ();
+our %sar_tcperror_stat = ();
 our %sar_commit_memory_stat = ();
 
 our @sar_to_be_stored = (
@@ -228,6 +230,8 @@ our @sar_to_be_stored = (
 	'sar_util_devices_stat',
 	'sar_networks_stat',
 	'sar_neterror_stat',
+	'sar_tcputil_stat',
+	'sar_tcperror_stat',
 	'sar_commit_memory_stat'
 );
 
@@ -1118,6 +1122,22 @@ my %SAR_GRAPH_INFOS = (
 		'y2label' => 'Milliseconds',
 		'legends' => ['await'],
 	},
+	'24' => {
+		'name' => 'network-utilization-tcp',
+		'title' => 'TCPv4 utilization',
+		'description' => 'TCPv4 network trafic (all interfaces)',
+		'ylabel' => 'Events/s',
+		'legends' => [ 'Initiated opens (active)', 'Passive opens (passive)', 'Received segments (iseg)', 'Sent segments (oseg)' ],
+		#              tcpActiveOpens           tcpPassiveOpens              tcpInSegs                tcpOutSegs
+	},
+	'25' => {
+		'name' => 'network-error-tcp',
+		'title' => 'TCPv4 errors',
+		'description' => 'TCPv4 network errors (all interfaces)',
+		'ylabel' => 'Errors/s',
+		'legends' => [ 'Failed attempts (atmptf)', 'Established & reset (estres)', 'Retransmitted segments (retrans)', 'Received in error (isegerr)', 'Reset flags (orsts)' ],
+		# (respectively:  tcpAttemptFails          tcpEstabResets               tcpRetransSegs              tcpInErrs                  tcpOutRsts
+	},
 );
 
 my %PIDSTAT_GRAPH_INFOS = (
@@ -1309,7 +1329,7 @@ if (!$CACHE)
 		foreach my $y (sort { $a <=> $b } @years)
 		{
 			print "DEBUG: looking for obsolete directories under $OUTPUT_DIR/$y/\n" if ($DEBUG);
-			`find $OUTPUT_DIR/$y/ -name '*' -mtime +$RETENTION -delete`;
+			`find '$OUTPUT_DIR/$y/' -name '*' -mtime +$RETENTION -delete`;
 		}
 	}
 
@@ -1386,7 +1406,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 	} else {
 		$OUTPUT_DIR = "$ORIG_OUTPUT_DIR";
 	}
-	
+
 	# Check if this directory have already been processed
 	if (-e "$OUTPUT_DIR/done")
 	{
@@ -1435,7 +1455,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 		# Create output subdirectories if not exists yet
 		if (!$CACHE && !-e "$OUTPUT_DIR")
 		{
-			my $ret = `mkdir -p $OUTPUT_DIR 2>&1`;
+			my $ret = `mkdir -p '$OUTPUT_DIR' 2>&1`;
 			if ($ret) {
 				die "FATAL: $ret\n";
 			}
@@ -1528,7 +1548,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			# if we have binary files and gzipped files, binary files contains all stats
 			elsif (($#binfiles == -1) && -e "$in_dir/$k.gz" && !-z "$in_dir/$k.gz")
 			{
-				&compute_postgresql_stat($in_dir, "$k.gz", $src_base, %{$DB_GRAPH_INFOS{$k}}); 
+				&compute_postgresql_stat($in_dir, "$k.gz", $src_base, %{$DB_GRAPH_INFOS{$k}});
 				push(@statistics_build, $k) if (!grep(/^$k$/, @statistics_build));
 			}
 			# Files use 'all' instead of 'user' with pgcluu_collectd --stat-type option
@@ -1569,13 +1589,13 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			if ($#statistics_build > 0)
 			{
 				foreach my $k (@statistics_build) {
-					&compute_postgresql_report($k, $src_base, %{$DB_GRAPH_INFOS{$k}}); 
+					&compute_postgresql_report($k, $src_base, %{$DB_GRAPH_INFOS{$k}});
 				}
 			}
 			else
 			{
 				# Try to limit report generation to stats that exists in memory.
-				# The storage variable name are the same than the keys in DB_GRAPH_INFOS
+				# The storage variable names are the same than the keys in DB_GRAPH_INFOS
 				# minus some transformation.
 				foreach my $k (sort {$a cmp $b} keys %DB_GRAPH_INFOS)
 				{
@@ -1597,9 +1617,9 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 					{
 						my $f = $k;
 						$f =~ s/_all_/_user_/;
-						&compute_postgresql_report($f, $src_base, %{$DB_GRAPH_INFOS{$k}}); 
+						&compute_postgresql_report($f, $src_base, %{$DB_GRAPH_INFOS{$k}});
 					} else {
-						&compute_postgresql_report($k, $src_base, %{$DB_GRAPH_INFOS{$k}}); 
+						&compute_postgresql_report($k, $src_base, %{$DB_GRAPH_INFOS{$k}});
 					}
 				}
 			}
@@ -1663,7 +1683,7 @@ foreach (my $dx = 0; $dx <= $#WORK_DIRS; $dx++)
 			%fulldata = ();
 			if ( defined $pidstat_file && -e $pidstat_file  && (($#binfiles == -1) || ($pidstat_file !~ /\.gz$/)) )
 			{
-				print "DEBUG: looking for pidstatt data file $pidstat_file\n" if ($DEBUG);
+				print "DEBUG: looking for pidstat data file $pidstat_file\n" if ($DEBUG);
 				foreach my $id (sort keys %PIDSTAT_GRAPH_INFOS) {
 					&compute_pidstatfile_stats($pidstat_file, $in_dir, %{$PIDSTAT_GRAPH_INFOS{$id}});
 				}
@@ -2668,7 +2688,7 @@ sub pg_stat_database_report
 			$fhcluster->close();
 		}
 	}
-	
+
 	foreach my $id (sort {$a <=> $b} keys %data_info)
 	{
 		my %data = ();
@@ -3288,10 +3308,8 @@ sub pg_stat_user_tables
 			$all_stat_user_tables{$data[1]}{$data[4]}{n_tup_del} = $data[11] if ($all_stat_user_tables{$data[1]}{$data[4]}{n_tup_del} < 0);
 			$all_stat_user_tables{$data[1]}{$data[4]}{n_tup_hot_upd} = $data[12] - ($all_stat_user_tables{$data[1]}{$data[4]}{n_tup_hot_upd} || 0);
 			$all_stat_user_tables{$data[1]}{$data[4]}{n_tup_hot_upd} = $data[12] if ($all_stat_user_tables{$data[1]}{$data[4]}{n_tup_hot_upd} < 0);
-			$all_stat_user_tables{$data[1]}{$data[4]}{n_dead_tup} = $data[14] - ($all_stat_user_tables{$data[1]}{$data[4]}{n_dead_tup} || 0);
-			$all_stat_user_tables{$data[1]}{$data[4]}{n_dead_tup} = $data[14] if ($all_stat_user_tables{$data[1]}{$data[4]}{n_dead_tup} < 0);
-			$all_stat_user_tables{$data[1]}{$data[4]}{n_live_tup} = $data[13] - ($all_stat_user_tables{$data[1]}{$data[4]}{n_live_tup} || 0);
-			$all_stat_user_tables{$data[1]}{$data[4]}{n_live_tup} = $data[13] if ($all_stat_user_tables{$data[1]}{$data[4]}{n_live_tup} < 0);
+			$all_stat_user_tables{$data[1]}{$data[4]}{n_dead_tup} = $data[14];
+			$all_stat_user_tables{$data[1]}{$data[4]}{n_live_tup} = $data[13];
 			$all_stat_user_tables{$data[1]}{$data[4]}{dead_vs_live} = sprintf("%.2f", ($data[14]*100)/(($data[13]+$data[14])||1));
 			if ($#data > 19) {
 				$all_stat_user_tables{$data[1]}{$data[4]}{vacuum_count} = $data[19] - ($all_stat_user_tables{$data[1]}{$data[4]}{vacuum_count} || 0);
@@ -3482,43 +3500,64 @@ sub pg_stat_user_indexes
 
 	# Read start file
 	my $curfh = open_filehdl("$in_dir/$file");
-	if (defined $curfh) {
-		while (my $l = <$curfh>) {
+	if (defined $curfh)
+	{
+		while (my $l = <$curfh>)
+		{
 			chomp($l);
 			next if (!$l);
 			my @data = split(/;/, $l);
 			next if (!&normalize_line(\@data));
 
 			# timestamp | dbname | relid | indexrelid | schemaname | relname | indexrelname | idx_scan | idx_tup_read | idx_tup_fetch
+			# PG16: timestamp | dbname | relid | indexrelid | schemaname | relname | indexrelname | idx_scan | last_idx_scan | idx_tup_read | idx_tup_fetch
 			$data[6] = "$data[4].$data[5].$data[6]";
 
 			# Get database statistics
 			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_scan} = $data[7];
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[8];
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[9];
+			my $idx = 8;
+			$all_stat_user_indexes{$data[1]}{$data[6]}{last_idx_scan} = '';
+			if ($#data > 9)
+			{
+				$idx = 9;
+				$all_stat_user_indexes{$data[1]}{$data[6]}{last_idx_scan} = $data[8];
+			}
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[$idx++];
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[$idx];
 		}
 		$curfh->close();
 	}
 
 	# Read end file and set the final value
 	$curfh = open_filehdl("$in_dir/end-$file");
-	if (defined $curfh) {
-		while (my $l = <$curfh>) {
+	if (defined $curfh)
+	{
+		while (my $l = <$curfh>)
+		{
 			chomp($l);
 			next if (!$l);
 			my @data = split(/;/, $l);
 			next if (!&normalize_line(\@data));
 
 			# timestamp | dbname | relid | indexrelid | schemaname | relname | indexrelname | idx_scan | idx_tup_read | idx_tup_fetch
+			# PG16: timestamp | dbname | relid | indexrelid | schemaname | relname | indexrelname | idx_scan | last_idx_scan | idx_tup_read | idx_tup_fetch
 			$data[6] = "$data[4].$data[5].$data[6]";
 
 			# Get database statistics
 			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_scan} = $data[7] - ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_scan} || 0);
 			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_scan} = $data[7] if ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_scan} < 0);
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[8] - ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} || 0);
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[8] if ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} < 0);
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[9] - ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} || 0);
-			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[9] if ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} < 0);
+			my $idx = 8;
+			$all_stat_user_indexes{$data[1]}{$data[6]}{last_idx_scan} = '';
+			if ($#data > 9)
+			{
+				$idx = 9;
+				$all_stat_user_indexes{$data[1]}{$data[6]}{last_idx_scan} = $data[8];
+			}
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[$idx] - ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} || 0);
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} = $data[$idx] if ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_read} < 0);
+			$idx++;
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[$idx] - ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} || 0);
+			$all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} = $data[$idx] if ($all_stat_user_indexes{$data[1]}{$data[6]}{idx_tup_fetch} < 0);
 		}
 		$curfh->close();
 	}
@@ -5132,7 +5171,7 @@ sub pgbouncer_ini_report
 	&show_diff($fhcluster, %all_pgbouncer_ini_diff);
 
 	%all_pgbouncer_ini_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -5392,7 +5431,7 @@ sub pg_class_size_report
 			$fhtable->close;
 		}
 	}
-	
+
 	%all_class_size = ();
 }
 
@@ -5881,8 +5920,9 @@ sub pg_stat_ext_report
 				</thead>
 				<tbody>
 };
-		my %stat_kinds = ('f' => 'dependencies', 'd' => 'ndistinct', 'm' => 'mcv');
-		foreach my $r (sort {"$a->[4].$a->[5]" cmp "$b->[4].$b->[5]"} @{$all_stat_extended_statistics{$db}}) {
+		my %stat_kinds = ('f' => 'dependencies', 'd' => 'ndistinct', 'm' => 'mcv', 'e' => 'expression');
+		foreach my $r (sort {"$a->[4].$a->[5]" cmp "$b->[4].$b->[5]"} @{$all_stat_extended_statistics{$db}})
+		{
 			$r->[2] =~ s/\{//;
 			$r->[2] =~ s/\}//;
 			my @skind = split(',', $r->[2]);
@@ -5971,7 +6011,7 @@ sub postgresql_conf_report
 	&show_diff($fhcluster, %all_postgresql_conf_diff);
 
 	%all_postgresql_conf_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6041,7 +6081,7 @@ sub recovery_conf_report
 	&show_diff($fhcluster, %all_recovery_conf_diff);
 
 	%all_recovery_conf_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6111,7 +6151,7 @@ sub postgresql_auto_conf_report
 	&show_diff($fhcluster, %all_postgresql_auto_conf_diff);
 
 	%all_postgresql_auto_conf_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6183,7 +6223,7 @@ sub pg_hba_conf_report
 	&show_diff($fhcluster, %all_pg_hba_conf_diff);
 
 	%all_pg_hba_conf_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6254,7 +6294,7 @@ sub pg_ident_conf_report
 	&show_diff($fhcluster, %all_pg_ident_conf_diff);
 
 	%all_pg_ident_conf_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6364,7 +6404,7 @@ sub pg_settings_report
 	&show_diff($fhcluster, %all_settings_diff);
 
 	%all_settings_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -6528,7 +6568,7 @@ sub pg_db_role_setting_report
 	&show_diff($fhcluster, %all_db_role_setting_diff);
 
 	%all_db_role_setting_diff = ();
-	
+
 	$fhcluster->close();
 }
 
@@ -7880,7 +7920,7 @@ sub html_footer
   <!-- Modal -->
   <div class="modal fade" id="pgcluuModal" role="dialog">
     <div class="modal-dialog">
-    
+
       <!-- Modal content-->
       <div class="modal-content">
         <div class="modal-header">
@@ -7894,10 +7934,10 @@ sub html_footer
           <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
         </div>
       </div>
-      
+
     </div>
   </div>
-                                                                            
+
     </div><!--/.container-->
   </body>
 </html>
@@ -8182,13 +8222,13 @@ sub generate_html_menu
 		        </li>
 		      <li id="menu-cluster-transactions"$disable_transactions><a href="cluster-database-transactions.html">Transaction throughput</a></li>
 		      <li id="menu-cluster-prepared"$disable_prepared><a href="cluster-database-prepared.html">Prepared transactions</a></li>
+		      <li id="menu-cluster-canceled_queries"$disable_canceled><a href="cluster-database-canceled_queries.html">Canceled queries</a></li>
 		      <li class="divider"></li>
 			<li id="menu-replication" class="dropdown-submenu$disable_allrepli">
 			   <a href="#" tabindex="-1">Replication statistics </a>
 			      <ul class="dropdown-menu">
 			      <li id="menu-cluster-xlog"$disable_xlog><a href="cluster-xlog.html">Wal bytes written</a></li>
 			      <li id="menu-cluster-replication"$disable_replication><a href="cluster-replication.html">Replication lag</a></li>
-			      <li id="menu-cluster-canceled_queries"$disable_canceled><a href="cluster-database-canceled_queries.html">Canceled queries</a></li>
 			      <li id="menu-cluster-conflicts"$disable_conflicts><a href="cluster-database-conflicts.html">Conflicts</a></li>
 			      </ul>
 		        </li>
@@ -8817,6 +8857,15 @@ sub generate_html_menu
 };
 		}
 		$menu_str .= qq{
+		  <li id="menu-tcp" class="dropdown-submenu">
+		     <a href="#" tabindex="-1">TCP </a>
+		      <ul class="dropdown-menu">
+		      <li id="menu-network-utilization"><a href="network-utilization-tcp.html">TCP utilization</a></li>
+		      <li id="menu-network-error"><a href="network-error-tcp.html">TCP errors</a></li>
+		      </ul>
+		  </li>
+};
+		$menu_str .= qq{
 		    </ul>
 		  </li>
 } if ($#IFACE_LIST >= 0);
@@ -8950,7 +8999,7 @@ sub compute_cpu_report
 
 			# We only process values from total CPU
 			next if ($cpu ne 'all');
-	
+
 			if (!exists $OVERALL_STATS{'system'}{'cpu'} || ($OVERALL_STATS{'system'}{'cpu'}[1] < $sar_cpu_stat{$t}{$cpu}{total})) {
 				@{$OVERALL_STATS{'system'}{'cpu'}} = ($t, $sar_cpu_stat{$t}{$cpu}{total});
 			}
@@ -9777,7 +9826,7 @@ sub compute_rw_device_report
 	my %devices_stat = ();
 	foreach my $t (sort {$a <=> $b} keys %sar_rw_devices_stat) {
 		foreach my $dev (keys %{$sar_rw_devices_stat{$t}}) {
-			if ($data_info->{name} eq 'system-device') { 
+			if ($data_info->{name} eq 'system-device') {
 				$OVERALL_STATS{'system'}{'devices'}{$dev}{read} += $sar_rw_devices_stat{$t}{$dev}{'rd_sec/s'};
 				$OVERALL_STATS{'system'}{'devices'}{$dev}{write} += $sar_rw_devices_stat{$t}{$dev}{'wr_sec/s'};
 				$devices_stat{$dev}{'rd_sec/s'} .= '[' . $t . ',' . $sar_rw_devices_stat{$t}{$dev}{'rd_sec/s'} . '],';
@@ -9802,7 +9851,7 @@ sub compute_rw_device_report
 			}
 			&html_header($fh, $src_base);
 			$fh->print("<ul id=\"slides\">\n");
-			if ($data_info->{name} eq 'system-device') { 
+			if ($data_info->{name} eq 'system-device') {
 				$devices_stat{$n}{'rd_sec/s'} =~ s/,$//;
 				$devices_stat{$n}{'wr_sec/s'} =~ s/,$//;
 				$fh->print( &jqplot_linegraph_array($IDX++, 'device-read_write', $data_info, $n, $devices_stat{$n}{'rd_sec/s'}, $devices_stat{$n}{'wr_sec/s'}) );
@@ -9850,7 +9899,7 @@ sub compute_space_device_report
 	my %devices_stat = ();
 	foreach my $t (sort {$a <=> $b} keys %sar_space_devices_stat) {
 		foreach my $dev (keys %{$sar_space_devices_stat{$t}}) {
-			if ($data_info->{name} eq 'system-space') { 
+			if ($data_info->{name} eq 'system-space') {
 				$OVERALL_STATS{'system'}{'space'}{$dev}{'fsused'} = $sar_space_devices_stat{$t}{$dev}{'%fsused'} if (!exists $OVERALL_STATS{'system'}{'space'}{$dev}{'fsused'} || $sar_space_devices_stat{$t}{$dev}{'%fsused'} > $OVERALL_STATS{'system'}{'space'}{$dev}{'fsused'});
 				$OVERALL_STATS{'system'}{'space'}{$dev}{'iused'} = $sar_space_devices_stat{$t}{$dev}{'%iused'} if (!exists $OVERALL_STATS{'system'}{'space'}{$dev}{'iused'} || $sar_space_devices_stat{$t}{$dev}{'%iused'} > $OVERALL_STATS{'system'}{'space'}{$dev}{'iused'});
 				$devices_stat{$dev}{'%fsused'} .= '[' . $t . ',' . $sar_space_devices_stat{$t}{$dev}{'%fsused'} . '],';
@@ -9872,7 +9921,7 @@ sub compute_space_device_report
 			}
 			&html_header($fh, $src_base);
 			$fh->print("<ul id=\"slides\">\n");
-			if ($data_info->{name} eq 'system-space') { 
+			if ($data_info->{name} eq 'system-space') {
 				$devices_stat{$n}{'%fsused'} =~ s/,$//;
 				$devices_stat{$n}{'%iused'} =~ s/,$//;
 				$fh->print( &jqplot_linegraph_array($IDX++, 'device-space', $data_info, $n, $devices_stat{$n}{'%fsused'}, $devices_stat{$n}{'%iused'}) );
@@ -9986,7 +10035,7 @@ sub compute_network_report
 		}
 	}
 	%sar_networks_stat = ();
-	
+
 	if (scalar keys %networks_stat > 0) {
 		foreach my $n (sort { $a cmp $b } keys %networks_stat) {
 
@@ -10034,8 +10083,8 @@ sub compute_network_error_report
 	my $src_base = shift();
 
 	my %errors_stat = ();
-	foreach my $t (sort {$a <=> $b} keys %sar_networks_stat) {
-		foreach my $dev (keys %{$sar_networks_stat{$t}}) {
+	foreach my $t (sort {$a <=> $b} keys %sar_neterror_stat) {
+		foreach my $dev (keys %{$sar_neterror_stat{$t}}) {
 			$errors_stat{$dev}{'rxerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'rxerr/s'} . '],';
 			$errors_stat{$dev}{'txerr/s'} .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'txerr/s'} . '],';
 			$errors_stat{$dev}{'coll/s'}  .= '[' . $t . ',' . $sar_neterror_stat{$t}{$dev}{'coll/s'} . '],';
@@ -10045,7 +10094,7 @@ sub compute_network_error_report
 		foreach my $n (sort { $a cmp $b } keys %errors_stat) {
 			push(@IFACE_LIST, $n) if (!grep(/^$n$/, @IFACE_LIST));
 
-			# Open a filehandle for each database
+			# Open a filehandle for each interface
 			my $fh = IO::File->new("$OUTPUT_DIR/$data_info->{name}-$n.html", 'w');
 			if (not defined $fh) {
 				die "FATAL: can't write to $OUTPUT_DIR/$data_info->{name}-$n.html, $!\n";
@@ -10057,10 +10106,104 @@ sub compute_network_error_report
 			$errors_stat{$n}{'coll/s'} =~ s/,$//;
 			$fh->print( &jqplot_linegraph_array($IDX++, 'network-error', $data_info, $n, $errors_stat{$n}{'rxerr/s'}, $errors_stat{$n}{'txerr/s'}, $errors_stat{$n}{'coll/s'}) );
 			$fh->print("</ul>\n");
-                        &html_footer($fh, $n);
-                        $fh->close;
-
+			&html_footer($fh, $n);
+			$fh->close;
 		}
+	}
+}
+
+# Network / TCP / Utilization
+sub compute_network_util_tcp_stat
+{
+    print "DEBUG: computing TCP utilization \n" if ($DEBUG);
+	for (my $i = 0; $i <= $#_; $i++) {
+        # 17:16:39     active/s passive/s    iseg/s    oseg/s
+        # 17:16:40         0.00      0.00      6.00      9.00
+		my @data = split(/;/, $_[$i]);
+		# print ("DEBUG: TCP util:  $data[2] - $data[3] - $data[4] - $data[5] - $data[6] \n") if ($DEBUG) ;
+		next if ($data[2] !~ /^\d+/);
+
+		# Skip unwanted lines
+		next if ($BEGIN && ($data[2] < $BEGIN_STAT));
+		next if ($END   && ($data[2] > $END_STAT));
+
+		map { s/,/\./ } @data ;
+		$sar_tcputil_stat{$data[2]}{'active/s'}  = $data[3] || 0;
+		$sar_tcputil_stat{$data[2]}{'passive/s'}  = $data[4] || 0;
+		$sar_tcputil_stat{$data[2]}{'iseg/s'} = $data[5] || 0;
+		$sar_tcputil_stat{$data[2]}{'oseg/s'} = $data[6] || 0;
+	}
+}
+
+# Network / TCP / Utilization
+sub compute_network_util_tcp_report
+{
+	my $data_info = shift();
+	my $src_base = shift();
+	my %util_stat = ();
+    print "DEBUG: building TCP utilization report \n" if ($DEBUG);
+	foreach my $t (sort {$a <=> $b} keys %sar_tcputil_stat) {
+		$util_stat{'active/s'}  .= '[' . $t . ',' . $sar_tcputil_stat{$t}{'active/s'}  . '],';
+		$util_stat{'passive/s'} .= '[' . $t . ',' . $sar_tcputil_stat{$t}{'passive/s'} . '],';
+		$util_stat{'iseg/s'}    .= '[' . $t . ',' . $sar_tcputil_stat{$t}{'iseg/s'}    . '],';
+		$util_stat{'oseg/s'}    .= '[' . $t . ',' . $sar_tcputil_stat{$t}{'oseg/s'} . '],';
+	}
+	if (scalar keys %util_stat > 0) {
+			print "DEBUG: Writing data into $OUTPUT_DIR/$data_info->{name}.html \n" if ($DEBUG);
+			$util_stat{'active/s'} =~ s/,$//;
+			$util_stat{'passive/s'} =~ s/,$//;
+			$util_stat{'iseg/s'} =~ s/,$//;
+			$util_stat{'oseg/s'} =~ s/,$//;
+			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, '', $util_stat{'active/s'}, $util_stat{'passive/s'}, $util_stat{'iseg/s'}, $util_stat{'oseg/s'});
+	}
+}
+
+# Network / TCP / Errrors
+sub compute_network_error_tcp_stat
+{
+    print "DEBUG: computing TCP errors \n" if ($DEBUG);
+	for (my $i = 0; $i <= $#_; $i++) {
+        # 12:27:43     atmptf/s  estres/s retrans/s isegerr/s   orsts/s
+        # 12:27:44         0,00      0,00      0,00      0,00      0,00
+		my @data = split(/;/, $_[$i]);
+		# print ("DEBUG: TCP error:  $data[2] - $data[3] - $data[4] - $data[5] - $data[6]  - $data[6] \n") if ($DEBUG) ;
+		next if ($data[2] !~ /^\d+/);
+
+		# Skip unwanted lines
+		next if ($BEGIN && ($data[2] < $BEGIN_STAT));
+		next if ($END   && ($data[2] > $END_STAT));
+
+		map { s/,/\./ } @data ;
+		$sar_tcperror_stat{$data[2]}{'atmptf/s'}  = $data[3] || 0;
+		$sar_tcperror_stat{$data[2]}{'estres/s'}  = $data[4] || 0;
+		$sar_tcperror_stat{$data[2]}{'retrans/s'} = $data[5] || 0;
+		$sar_tcperror_stat{$data[2]}{'isegerr/s'} = $data[6] || 0;
+		$sar_tcperror_stat{$data[2]}{'orsts/s'}   = $data[7] || 0;
+	}
+}
+
+# Network / TCP / Errrors
+sub compute_network_error_tcp_report
+{
+	my $data_info = shift();
+	my $src_base = shift();
+	my %errors_stat = ();
+    print "DEBUG: building TCP errors report \n" if ($DEBUG);
+	foreach my $t (sort {$a <=> $b} keys %sar_tcperror_stat) {
+		$errors_stat{'atmptf/s'}  .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'atmptf/s'}  . '],';
+		$errors_stat{'estres/s'}  .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'estres/s'}  . '],';
+		$errors_stat{'retrans/s'} .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'retrans/s'} . '],';
+		$errors_stat{'isegerr/s'} .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'isegerr/s'} . '],';
+		$errors_stat{'orsts/s'}   .= '[' . $t . ',' . $sar_tcperror_stat{$t}{'orsts/s'}   . '],';
+	}
+	if (scalar keys %errors_stat > 0) {
+			print "DEBUG: Writing data into $OUTPUT_DIR/$data_info->{name}.html \n" if ($DEBUG);
+			$errors_stat{'atmptf/s'} =~ s/,$//;
+			$errors_stat{'estres/s'} =~ s/,$//;
+			$errors_stat{'retrans/s'} =~ s/,$//;
+			$errors_stat{'isegerr/s'} =~ s/,$//;
+			$errors_stat{'orsts/s'} =~ s/,$//;
+			print $FH &jqplot_linegraph_array($IDX++, 'network-error-tcp', $data_info, '', $errors_stat{'atmptf/s'}, $errors_stat{'estres/s'}, $errors_stat{'retrans/s'}, $errors_stat{'isegerr/s'}, $errors_stat{'orsts/s'} );
 	}
 }
 
@@ -10436,6 +10579,44 @@ sub compute_sarstat_stats
 		# Compute network errors statistics
 		&compute_network_error_stat(@content);
 	}
+
+	####
+	# Get TCP utilization
+	####
+	if ($data_info{name} eq 'network-utilization-tcp') {
+		my $command = "$SADF_PROG -t -P ALL -d $file -- -n TCP";
+		print "DEBUG: TCP utilization : running $command'\n" if ($DEBUG);
+		# Load data from file
+		my $fh = IO::File->new("$command", '-|');
+		if (defined $fh) {
+			die "FATAL: can't read output from command ($command): $!\n";
+		}
+		my @content = <$fh>;
+		close($fh);
+		chomp(@content);
+
+		# Compute network errors statistics
+		&compute_network_util_tcp_stat(@content);
+	}
+
+    ####
+	# Get TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp') {
+		my $command = "$SADF_PROG -t -P ALL -d $file -- -n ETCP";
+		print "DEBUG: TCP errors : running $command'\n" if ($DEBUG);
+		# Load data from file
+		my $fh = IO::File->new("$command", '-|');
+		if (defined $fh) {
+			die "FATAL: can't read output from command ($command): $!\n";
+		}
+		my @content = <$fh>;
+		close($fh);
+		chomp(@content);
+
+		# Compute network errors statistics
+		&compute_network_error_tcp_stat(@content);
+	}
 }
 
 sub find_report_type
@@ -10495,8 +10676,10 @@ sub find_report_type
 	} elsif ($data =~ m#runq-sz\s+#) {
 		$type = 'load';
 	# New in 8.1.7
-	} elsif ($data =~ m#active\/s\s+#) {
+	} elsif ($data =~ m#active\/s\s+#) {   # sar -n TCP
 		$type = 'tcp';
+	} elsif ($data =~ m#atmptf\/s\s+#) {   # sar -n ETCP
+		$type = 'tcperr';
 	# Since 11.1.4
 	} elsif ($data =~ m#\%ufsused#) {
 		$type = 'space';
@@ -10888,6 +11071,8 @@ sub compute_sarfile_stats
 {
 	my ($file, $in_dir, %data_info) = @_;
 
+    print "DEBUG: Computing sarfile stats: $data_info{name} \n" if ($DEBUG);
+
 	$SAR_UPPER_11_5_6 = 0;
 
 	# Load sar statistics from file if not already done
@@ -11088,11 +11273,31 @@ sub compute_sarfile_stats
 		&compute_network_error_stat(@{$fulldata{err}});
 	}
 
+	####
+	# Set network TCP errors
+	####
+	if ($data_info{name} eq 'network-utilization-tcp')
+	{
+		# Compute network error statistics
+		&compute_network_util_tcp_stat(@{$fulldata{tcp}});
+	}
+
+	####
+	# Set network TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp')
+	{
+		# Compute network error statistics
+		&compute_network_error_tcp_stat(@{$fulldata{tcperr}});
+	}
+
 }
 
 sub compute_sar_graph
 {
 	my ($src_base, %data_info) = @_;
+
+    print "DEBUG: Computing sar data: $data_info{name} \n" if ($DEBUG);
 
 	if (!grep(/^$data_info{name}$/,
 			'system-await', 'system-device',
@@ -11101,6 +11306,7 @@ sub compute_sar_graph
 			'network-utilization', 'network-error'))
 	{
 		# Open global filehandle
+		print ("DEBUG: opening $data_info{name} \n") if ($DEBUG) ;
 		$FH = IO::File->new("$OUTPUT_DIR/$data_info{name}.html", 'w');
 		if (not defined $FH) {
 			die "FATAL: can't write to $OUTPUT_DIR/$data_info{name}.html, $!\n";
@@ -11315,6 +11521,24 @@ sub compute_sar_graph
 		&compute_network_error_report(\%data_info, $src_base);
 	}
 
+	####
+	# Show TCP utilization
+	####
+	if ($data_info{name} eq 'network-utilization-tcp')
+	{
+		# Compute graphs for network errors statistics
+		&compute_network_util_tcp_report(\%data_info, $src_base);
+	}
+
+	####
+	# Show TCP errors
+	####
+	if ($data_info{name} eq 'network-error-tcp')
+	{
+		# Compute graphs for network errors statistics
+		&compute_network_error_tcp_report(\%data_info, $src_base);
+	}
+
 	if (!grep(/^$data_info{name}$/, 'system-await', 'system-srvtime', 'system-device', 'system-tpsdevice', 'system-cpudevice', 'network-utilization', 'network-error'))
 	{
 		# Write html footer in all reports
@@ -11488,7 +11712,7 @@ sub convert_sar_time
 		} elsif ($am_pm && ($am_pm eq 'PM')) {
 			$h += 12 if ($h < 12);
 		}
-			
+
 		my $time = ($h*3600)+($m*60)+$s;
 
 		my $tz = ((0-$TIMEZONE)*3600);
@@ -11529,7 +11753,7 @@ sub convert_pidstat_time
 		} elsif ($am_pm && ($am_pm eq 'PM')) {
 			$h += 12 if ($h < 12);
 		}
-			
+
 		my $time = ($h*3600)+($m*60)+$s;
 
 		my $tz = ((0-$TIMEZONE)*3600);
@@ -12064,7 +12288,7 @@ sub clear_stats
 	%sysinfo = ();
 	foreach my $name (@sar_to_be_stored) {
 		%{$name} = ();
-	}		
+	}
 
 }
 
@@ -12452,7 +12676,7 @@ sub build_incremental_index
 sub IsLeapYear
 {
 	return ((($_[0] & 3) == 0) && (($_[0] % 100 != 0) || ($_[0] % 400 == 0)));
-} 
+}
 
 sub get_calendar
 {
