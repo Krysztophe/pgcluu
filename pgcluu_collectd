@@ -7,7 +7,7 @@
 # For license terms, see the LICENSE file.
 #
 # Author: Gilles Darold
-# Copyright: (C) 2012-2023 Gilles Darold - All rights reserved.
+# Copyright: (C) 2012-2024 Gilles Darold - All rights reserved.
 #------------------------------------------------------------------------------
 use vars qw($VERSION $PROGRAM);
 use strict qw(vars subs);
@@ -26,7 +26,7 @@ use constant UMASK => 0022;
 
 $| = 1;
 
-$VERSION = '3.5';
+$VERSION = '4.0';
 $PROGRAM = 'pgcluu_collectd';
 
 $SIG{'CHLD'} = 'DEFAULT';
@@ -39,7 +39,7 @@ my $CAT_PROG    = 'cat ';
 my $PIDSTAT_PROG = 'pidstat';
 
 # Global variables
-my $CONFIG_FILE     = "/etc/pgcluu.conf";
+my $CONFIG_FILE     = "/usr/local/etc/pgcluu.conf";
 my $SAR_FILE    = 'sar_stats.dat';
 my $PIDSTAT_FILE    = 'pidstat_stats.dat';
 my $PIDFILE     = "/var/run/postgresql/pgcluu_collectd.pid";
@@ -728,7 +728,6 @@ sub terminate
 
 	&dprint("LOG: Received terminating signal $sig.\n");
 
-        $SIG{INT} = \&terminate;
         $SIG{QUIT} = \&terminate;
         $SIG{TERM} = \&terminate;
 
@@ -750,13 +749,14 @@ sub end_gracefully
 
 	&dprint("LOG: Received terminating signal $sig.\n");
 
+        $SIG{INT} = \&end_gracefully;
         $SIG{HUP} = \&end_gracefully;
 }
 
 
 # Die on kill -2, -3 or -15
-$SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = \&terminate;
-$SIG{'HUP'} = \&end_gracefully;
+$SIG{'QUIT'} = $SIG{'TERM'} = \&terminate;
+$SIG{'HUP'} = $SIG{'INT'} = \&end_gracefully;
 
 # Run in interactive mode if required
 if (!$DAEMONIZE)
@@ -931,7 +931,7 @@ while (1)
 	{
 		# Set the new output directory
 		$OUT_DIR = "$year/$mon/$mday";
-		dprint ("OUT_DIR is: $OUT_DIR \n") ;
+		dprint ("OUT_DIR is: $OUT_DIR \n") if ($initial_run);
         }
 
 	# Compress previous hourly directory if required
@@ -958,12 +958,12 @@ while (1)
 	{
 		# Set the new output directory
 		$OUT_DIR = "$year/$mon/$mday/$hour";
-		dprint ("OUT_DIR is: $OUT_DIR \n") ;
+		dprint ("OUT_DIR is: $OUT_DIR \n") if ($initial_run);
 	}
 	elsif (!$D_ROTATE)
 	{
 		$OUT_DIR = $OUTPUT_DIR;
-		dprint ("OUT_DIR is: $OUT_DIR \n") ;
+		dprint ("OUT_DIR is: $OUT_DIR \n") if ($initial_run);
         }
 
 	# If we have a retention limit remove everything older
@@ -1198,8 +1198,9 @@ sub collect_metrics
 	if (!$NO_DATABASE)
 	{
 		# Collecting database statistics if there other than pgbouncer metrics to collect
-		if ($PG_RET >= 0) {
-			if (open($fhl, '|-', $PSQL_PROG)) {
+		if ($PG_RET >= 0)
+		{
+			if (open(my $fhl, '|-', $PSQL_PROG)) {
 				print $fhl $script_sql, "\n";
 				close($fhl);
 			} else {
@@ -1223,7 +1224,7 @@ sub collect_metrics
 				my $LOCAL_PSQL_PROG = &set_local_psql_command($db);
 
 				# Collecting database statistics
-				if (open($fhl, '|-', $LOCAL_PSQL_PROG)) {
+				if (open(my $fhl, '|-', $LOCAL_PSQL_PROG)) {
 					print $fhl $script_repeat_sql, "\n";
 					close($fhl);
 				} else {
@@ -1713,6 +1714,20 @@ sub get_uptime
 	return $uptime;
 }
 
+####
+# Get PGDATA path
+####
+sub get_pgdata_path
+{
+	my $path = `echo "SELECT setting FROM pg_settings WHERE name='data_directory';" | $PSQL_PROG`;
+	if ($? != 0) {
+	       unlink_pid_and_exit("FATAL: psql error.", 0);
+	}
+	chomp($path);
+
+	return $path;
+}
+
 
 ####
 # Retrieve schemas for a given database.
@@ -1987,33 +2002,40 @@ sub grab_os_information
 	if ($ret ne '') {
 		push(@system, "scaling_governor: " . $ret);
 	}
-	# Since kernel 5.19, the migration cost is define in a file
+	# Since kernel 5.19, the migration cost is define in a file, /sys/kernel/debug
+	# must be readable by the user running pgcluu_collectd
 	if (!grep(/sched_migration_cost/, @system)) {
 		$cmd = 'cat /sys/kernel/debug/sched/migration_cost_ns 2>/dev/null';
 		$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
 		$ret = `$cmd`;
 		chomp($ret);
-		push(@system, "/sys/kernel/debug/sched/migration_cost_ns: " . $ret);
+		push(@system, "/sys/kernel/debug/sched/migration_cost_ns: " . $ret) if ($ret ne '');
 	}
+
 	# Look at block devices informations
 	my @devices;
 	$cmd = 'ls /sys/block/ | grep -v "^loop"';
-	foreach my $device ( `$cmd` ) {
+	foreach my $device ( `$cmd` )
+	{
 		my @row;
 		chomp($device);
 		push(@row , 'Device : ' . $device . "\n");
 		# Fetch scheduler setting
-		$cmd = 'cat /sys/block/' . $device . '/queue/scheduler';
-		push(@row , '/queue/scheduler : ' . `$cmd`);
+		$cmd = 'cat /sys/block/' . $device . '/queue/scheduler 2>/dev/null';
+		my $ret = `$cmd`;
+		push(@row , '/queue/scheduler : ' . $ret) if ($ret);
 		# Fetch add_random setting
-		$cmd = 'cat /sys/block/' . $device . '/queue/add_random';
-		push(@row , '/queue/add_random : ' . `$cmd`);
+		$cmd = 'cat /sys/block/' . $device . '/queue/add_random 2>/dev/null';
+		$ret = `$cmd`;
+		push(@row , '/queue/add_random : ' . $ret) if ($ret);
 		# Fetch rq_affinity setting
-		$cmd = 'cat /sys/block/' . $device . '/queue/rq_affinity';
-		push(@row , '/queue/rq_affinity : ' . `$cmd`);
+		$cmd = 'cat /sys/block/' . $device . '/queue/rq_affinity 2>/dev/null';
+		$ret = `$cmd`;
+		push(@row , '/queue/rq_affinity : ' . $ret) if ($ret);
 		# Fetch rotational setting
-		$cmd = 'cat /sys/block/' . $device . '/queue/rotational';
-		push(@row , '/queue/rotational : ' . `$cmd`);
+		$cmd = 'cat /sys/block/' . $device . '/queue/rotational 2>/dev/null';
+		$ret = `$cmd`;
+		push(@row , '/queue/rotational : ' . $ret) if ($ret);
 		push(@devices, @row);
 	}
 	print $fhl "[DEVICES]\n";
@@ -2042,6 +2064,12 @@ sub grab_os_information
 	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
 	@installation = `$cmd`;
 
+	# Get all file status from PGDATA directory
+	my $pgdata = &get_pgdata_path();
+	$cmd = "ls -la $pgdata/ 2>/dev/null";
+	$cmd = $sshcmd . ' "' . $cmd . "\"" if ($sshcmd);
+	my @list_pgdatafiles = `$cmd`;
+
 	print $fhl "[CPU]\n";
 	print $fhl @cpuinfo;
 	print $fhl "[KERNEL]\n";
@@ -2068,6 +2096,8 @@ sub grab_os_information
 	print $fhl @crontab;
 	print $fhl "[INSTALLATION]\n";
 	print $fhl @installation;
+	print $fhl "[PGDATA]\n";
+	print $fhl @list_pgdatafiles;
 
 	close($fhl);
 }
@@ -2101,6 +2131,7 @@ options:
   -M, --max-size=SIZE      self terminate program when the size of the output
                            directory exceed a given size. Can be written: 2GB
                            or 2000MB.
+  -n, --no-pg_stats-dump   don't collect statistics from the pg_stats view.
   -p, --port=PORT          database port(s) to connect to. Defaults to 5432.
   -P, --psql=BIN           path to the psql command. Default: $PSQL_PROG.
   -Q, --no-statement       do not collect statistics from pg_stat_statements.
@@ -2116,7 +2147,6 @@ options:
   -v, --verbose            Print out debug informations.
   -V, --version            Show pgcluu_collectd version and exit.
   -w, --no-waitevent       don't collect wait event stats from pg_wait_sampling.
-  -n, --no-pg_stats-dump   don't collect statistics from the pg_stats view.
   -W, --password=pass      database password.
   -z, --compress           force compression of rotated data files.
   --included-db=DATABASE   collect statistics only for those databases present
@@ -3305,11 +3335,11 @@ sub wait_all_childs
 		{
 			if ($COLLECT_PID == $kid) {
 				$COLLECT_PID = 0;
-			} elsif ($COMPRESS_PID) {
+			} elsif ($COMPRESS_PID == $kid) {
 				$COMPRESS_PID = 0;
-			} elsif ($SAR_PID) {
+			} elsif ($SAR_PID == $kid) {
 				$SAR_PID = 0;
-			} elsif ($PIDSTAT_PID) {
+			} elsif ($PIDSTAT_PID == $kid) {
 				$PIDSTAT_PID = 0;
 			}
 		}
